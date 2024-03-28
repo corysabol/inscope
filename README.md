@@ -1,6 +1,6 @@
 # inscope 🌐
 
-`inscope` is a Rust-based command-line interface (CLI) tool designed for penetration testers and security professionals. It allows for efficient management and verification of penetration testing scopes using local databases. With `inscope`, users can easily add, remove, and check IP addresses against a locally maintained scope database, streamlining the process of scope management during security assessments.
+`inscope` is a Rust-based command-line interface (CLI) tool designed for penetration testers and security professionals tired of having to flail around with grep, csv, and txt files to verify and manage the scope of an engagement. It allows for management and verification of penetration testing scopes using local databases.
 
 ## Features 🛠️
 

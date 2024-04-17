@@ -1,4 +1,3 @@
-use anyhow::Error;
 use clap::{error, Parser, Subcommand};
 use rusqlite::{Connection, Result};
 use std::env;
@@ -30,8 +29,14 @@ enum Commands {
         #[arg(short, long)]
         path: Option<String>,
     },
-    /// Manipulate the database of IP addresses
-    DB {
+    /// Print the scope to STDOUT
+    Show {
+        /// Optional - The path to the database file
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// Add to the scope of IP addresses
+    Add {
         /// The path to the database file
         #[arg(short, long)]
         path: Option<String>,
@@ -41,10 +46,8 @@ enum Commands {
         /// File containing a list of IP addresses to add to the scope
         #[arg(short, long)]
         list: Option<PathBuf>,
-        /// Print out the IPs in the scope database to STDOUT
-        #[arg(short, long)]
-        show: bool,
     },
+    Remove {},
 }
 
 #[derive(Debug)]
@@ -57,7 +60,7 @@ fn create_db(path: PathBuf) -> Result<Connection, rusqlite::Error> {
     let conn = Connection::open(&path)?;
 
     conn.execute(
-        "CREATE TABLE scope (
+        "CREATE TABLE IF NOT EXISTS scope (
             id  INTEGER PRIMARY KEY,
             ip  TEXT UNIQUE
         )",
@@ -110,12 +113,29 @@ fn main() -> Result<(), rusqlite::Error> {
             }
         }
 
-        Some(Commands::DB {
-            path,
-            ip,
-            list,
-            show,
-        }) => {
+        Some(Commands::Show { path }) => {
+            let path = match path {
+                Some(p) => p.clone(),
+                None => DEFAULT_PATH.to_string(),
+            };
+            let conn = create_db(path.into())?;
+
+            // Print the scope to stdout
+            println!("showing scope from DB");
+            let scope_result = get_scope(&conn);
+            match scope_result {
+                Ok(scope) => {
+                    for ip in scope {
+                        println!("{}", ip.ip);
+                    }
+                }
+                Err(err) => {
+                    eprintln!("Couldn't get scope list due to error {:?}", err)
+                }
+            }
+        }
+
+        Some(Commands::Add { path, ip, list }) => {
             let path = match path {
                 Some(p) => p.clone(),
                 None => DEFAULT_PATH.to_string(),
@@ -174,6 +194,9 @@ fn main() -> Result<(), rusqlite::Error> {
             }
         }
 
+        // TODO: Implement me
+        Some(Commands::Remove {}) => {}
+
         None => {}
     }
 
@@ -185,6 +208,23 @@ fn main() -> Result<(), rusqlite::Error> {
 
 fn add_to_scope(conn: &Connection, ip: &str) -> Result<usize> {
     conn.execute("INSERT INTO scope (ip) VALUES (?1)", [ip])
+}
+
+fn get_scope(conn: &Connection) -> Result<Vec<ScopedIp>> {
+    let mut stmt = conn.prepare("SELECT id, ip FROM scope")?;
+
+    let ip_iter = stmt.query_map([], |row| {
+        Ok(ScopedIp {
+            id: row.get(0)?,
+            ip: row.get(1)?,
+        })
+    })?;
+
+    let mut ips = Vec::new();
+    for ip_result in ip_iter {
+        ips.push(ip_result?);
+    }
+    Ok(ips)
 }
 
 fn is_in_scope(conn: &Connection, ip: &str) -> Result<bool> {

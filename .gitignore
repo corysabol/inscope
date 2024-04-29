@@ -3,3 +3,4 @@
 scope
 **/*.db
 **/*.sqlite
+**/*.sqlite3

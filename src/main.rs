@@ -31,6 +31,7 @@ enum Commands {
         path: Option<String>,
     },
     /// Print the scope to STDOUT
+    /// Display flags -n, -l, -c may be combined to filter output
     Show {
         /// Optional - The path to the database file
         #[arg(short, long)]
@@ -44,33 +45,27 @@ enum Commands {
         #[arg(short, long)]
         names: bool,
 
-        /// Show live hosts
+        /// Show only live hosts
         #[arg(short, long)]
         live: bool,
+
+        /// Show only hosts with comments
+        #[arg(short, long)]
+        comments: bool,
     },
     /// Add to the scope of IP addresses
-    /// IP addresses will be expected from STDIN in newline delimited format if no flags are given
-    /// Each IP address may also have a list of comma delimited hostnames to associate them
-    /// E.g.
-    ///
-    /// 138.155.2.5
-    /// 192.168.1.1,foo.bar.com,bar.com
-    /// 198.111.11.1,example.net,anotherexample.com,foo.bar.net
+    /// IP addresses will be expected from STDIN in newline delimited format if --ip or --list are
+    /// omitted
     Add {
         /// The path to the database file
         #[arg(short, long)]
         path: Option<String>,
 
-        /// An IP address to add to the scope, can have an associated list of names
-        /// -i 192.168.1.1,foo.bar.com,bar.com
+        /// An IP address to add to the scope
         #[arg(short, long)]
         ip: Option<String>,
 
         /// File containing a list of IP addresses to add to the scope
-        /// Each line can have an associated list of names that are mapped to the IP
-        /// 138.155.2.5
-        /// 192.168.1.1,foo.bar.com,bar.com
-        /// 198.111.11.1,example.net,anotherexample.com,foo.bar.net
         #[arg(short, long)]
         list: Option<PathBuf>,
 
@@ -87,6 +82,7 @@ struct ScopedIp {
     id: i32,
     ip: String,
     names: String,
+    comment: String,
     live: bool,
 }
 
@@ -108,6 +104,7 @@ fn create_db(path: PathBuf) -> Result<Connection, rusqlite::Error> {
             id  INTEGER PRIMARY KEY,
             ip  TEXT UNIQUE,
             names TEXT,
+            comment TEXT,
             live INTEGER
         )",
         (),
@@ -125,6 +122,7 @@ fn main() -> Result<(), rusqlite::Error> {
             // If we get an IP positiional we check it against the databse
             match ip {
                 Some(ip) => {
+                    println!("checking IP...");
                     let path = match path {
                         Some(p) => p.clone(),
                         None => DEFAULT_PATH.to_string(),
@@ -164,6 +162,7 @@ fn main() -> Result<(), rusqlite::Error> {
             ip,
             names,
             live,
+            comments,
         }) => {
             let path = match path {
                 Some(p) => p.clone(),
@@ -174,10 +173,38 @@ fn main() -> Result<(), rusqlite::Error> {
             // Print the scope to stdout
             let scope_result = get_scope(&conn);
             match scope_result {
-                Ok(scope) => {
-                    for ip in scope {
-                        //println!("{}", ip.ip);
-                        println!("{}", ip);
+                Ok(mut scope) => {
+                    if *names {
+                        // Show hosts that have names
+                        scope = scope
+                            .into_iter()
+                            .filter(|scoped_ip| scoped_ip.names.len() > 0)
+                            .collect();
+                    }
+
+                    if *comments {
+                        // Show hosts that have comments
+                        scope = scope
+                            .into_iter()
+                            .filter(|scoped_ip| scoped_ip.comment.len() > 0)
+                            .collect();
+                    }
+
+                    if *live {
+                        // Show hosts that are live
+                        scope = scope
+                            .into_iter()
+                            .filter(|scoped_ip| scoped_ip.live)
+                            .collect();
+                    }
+
+                    // Display the results
+                    for scoped_ip in scope {
+                        let mut output = format!("{}", scoped_ip);
+                        if *ip {
+                            output = format!("{}", scoped_ip.ip);
+                        }
+                        println!("{output}");
                     }
                 }
                 Err(err) => {
@@ -282,21 +309,34 @@ fn add_to_scope(conn: &Connection, ip_str: &str, live: bool) -> Result<usize> {
     } else {
         "".to_string()
     };
+    let parts: Vec<String> = ip_str.split("#").map(str::to_string).collect();
+    let comment = if parts.len() > 1 {
+        parts[parts.len() - 1].clone()
+    } else {
+        "".to_string()
+    };
+
     conn.execute(
-        "INSERT INTO scope (ip, names, live) VALUES (?1, ?2, ?3)",
-        [ip, names.to_string(), is_live.to_string()],
+        "INSERT INTO scope (ip, names, comment, live) VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(ip) DO UPDATE SET
+        names = excluded.names,
+        comment = excluded.comment,
+        live = excluded.live
+        ",
+        [ip, names.to_string(), comment, is_live.to_string()],
     )
 }
 
 fn get_scope(conn: &Connection) -> Result<Vec<ScopedIp>> {
-    let mut stmt = conn.prepare("SELECT id, ip, names, live FROM scope")?;
+    let mut stmt = conn.prepare("SELECT id, ip, names, comment, live FROM scope")?;
 
     let ip_iter = stmt.query_map([], |row| {
-        let live_val: u8 = row.get(3)?;
+        let live_val: u8 = row.get(4)?;
         Ok(ScopedIp {
             id: row.get(0)?,
             ip: row.get(1)?,
             names: row.get(2)?,
+            comment: row.get(3)?,
             live: if live_val >= 1 { true } else { false },
         })
     })?;
@@ -309,13 +349,14 @@ fn get_scope(conn: &Connection) -> Result<Vec<ScopedIp>> {
 }
 
 fn is_in_scope(conn: &Connection, ip: &str) -> Result<bool> {
-    let mut stmt = conn.prepare("SELECT id, ip, names FROM scope WHERE ip = ?1")?;
+    let mut stmt = conn.prepare("SELECT id, ip, names, comment, live FROM scope WHERE ip = ?1")?;
     let ip_iter = stmt.query_map([ip], |row| {
         let live_val: u8 = row.get(3)?;
         Ok(ScopedIp {
             id: row.get(0)?,
             ip: row.get(1)?,
             names: row.get(2)?,
+            comment: row.get(3)?,
             live: if live_val >= 1 { true } else { false },
         })
     })?;
